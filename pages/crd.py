@@ -1,37 +1,62 @@
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from doelab.anova.crd import anova_crd
 
 
-st.set_page_config(page_title="CRD", layout="centered")
-
 st.title("CRD — One-way ANOVA")
-st.caption("Enter observations by treatment, then run doeLab's CRD ANOVA.")
+st.caption("Enter observations by treatment (columns), then run doeLab's CRD ANOVA.")
 
-default = pd.DataFrame(
+# Wide format default: columns are treatments, rows are replicates
+default_wide = pd.DataFrame(
     {
-        "treatment": ["A", "A", "B", "B", "C", "C"],
-        "y": [10, 12, 13, 15, 9, 11],
+        "A": [10, 12],
+        "B": [13, 15],
+        "C": [9, 11],
     }
 )
 
-df = st.data_editor(default, num_rows="dynamic", use_container_width=True)
+wide = st.data_editor(
+    default_wide,
+    num_rows="dynamic",
+    use_container_width=True,
+)
 
-run = st.button("Run CRD ANOVA", type="primary")
+def wide_to_long(wide_df: pd.DataFrame) -> pd.DataFrame:
+    df = wide_df.copy()
 
-if run:
-    try:
-        res = anova_crd(df)
+    # Ensure numeric where possible; blanks become NaN
+    for c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        st.subheader("ANOVA table")
-        st.dataframe(res.table, use_container_width=True)
+    long = (
+        df.melt(var_name="treatment", value_name="y")
+        .dropna(subset=["y"])
+        .reset_index(drop=True)
+    )
 
-        # show any extra payload if present
-        for attr in ("means", "effects", "residuals", "fitted"):
-            if hasattr(res, attr):
-                st.subheader(attr.capitalize())
-                st.write(getattr(res, attr))
+    long["treatment"] = long["treatment"].astype(str)
+    return long
 
-    except Exception as e:
-        st.error(str(e))
+
+if st.button("Run CRD ANOVA", type="primary"):
+    df = wide_to_long(wide)
+
+    if df.empty:
+        st.error("No numeric observations found. Enter at least one value.")
+        st.stop()
+
+    res = anova_crd(df)
+
+    st.subheader("ANOVA table")
+    table = res.table
+
+    # If doeLab returns an index-labeled table, make it display cleanly
+    if isinstance(table, pd.DataFrame) and table.index.name is not None:
+        table = table.reset_index()
+
+    st.dataframe(table, use_container_width=True)
+
+    with st.expander("Show data used (long format)"):
+        st.dataframe(df, use_container_width=True)
