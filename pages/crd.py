@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from doelab.anova.crd import anova_crd
+from doelab import anova_crd
 
 
 st.title("Completely Randomized Design")
@@ -332,7 +332,6 @@ n_treatments = st.number_input(
     "Number of treatments",
     min_value=1,
     max_value=200,
-    value=int(st.session_state["crd_n_treatments_widget"]),
     step=1,
     key="crd_n_treatments_widget",
 )
@@ -341,7 +340,6 @@ n_obs = st.number_input(
     "Observations per treatment",
     min_value=1,
     max_value=50,
-    value=int(st.session_state["crd_n_obs_widget"]),
     step=1,
     key="crd_n_obs_widget",
 )

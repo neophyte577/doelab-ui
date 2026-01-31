@@ -11,5 +11,6 @@ Use the sidebar to open a page.
 
 Start with:
 - **CRD**
+- **2^k Factorial**
 """
 )
