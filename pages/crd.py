@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from doelab import anova_crd
+from doelab import crd_analyze
+
+from collections.abc import Mapping
 
 
 st.title("Completely Randomized Design")
@@ -60,21 +62,48 @@ def long_to_grid(df_long: pd.DataFrame) -> pd.DataFrame:
     return grid
 
 
-def workings_to_table(workings: dict) -> pd.DataFrame:
+def _coerce_scalar_for_display(v):
+    if isinstance(v, (dict, list, tuple, set)):
+        return str(v)
+    if isinstance(v, (float, np.floating)):
+        return float(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    return v
+
+
+def _flatten_mapping(x, prefix: str = "") -> list[dict]:
     rows = []
-    for k, v in (workings or {}).items():
-        if isinstance(v, (dict, list, tuple, set)):
-            v_disp = str(v)
-        elif isinstance(v, (float, np.floating)):
-            v_disp = float(v)
-        elif isinstance(v, (int, np.integer)):
-            v_disp = int(v)
-        elif isinstance(v, (bool, np.bool_)):
-            v_disp = bool(v)
-        else:
-            v_disp = v
-        rows.append({"quantity": k, "value": v_disp})
-    return pd.DataFrame(rows)
+    if x is None:
+        return rows
+
+    if isinstance(x, Mapping):
+        for k, v in x.items():
+            key = f"{prefix}{k}" if prefix else str(k)
+            if isinstance(v, Mapping):
+                rows.extend(_flatten_mapping(v, prefix=f"{key}."))
+            else:
+                rows.append({"quantity": key, "value": _coerce_scalar_for_display(v)})
+        return rows
+
+    rows.append({"quantity": prefix.rstrip("."), "value": _coerce_scalar_for_display(x)})
+    return rows
+
+
+def workings_to_table(workings) -> pd.DataFrame:
+    # New library returns frozen mappings (often MappingProxyType), not necessarily dict.
+    if not isinstance(workings, Mapping) or not workings:
+        return pd.DataFrame(columns=["quantity", "value"])
+
+    doe = workings.get("doe", None)
+    if isinstance(doe, Mapping):
+        rows = _flatten_mapping(doe, prefix="doe.")
+    else:
+        rows = _flatten_mapping(workings, prefix="")
+
+    return pd.DataFrame(rows, columns=["quantity", "value"])
 
 
 def _auto_treatment_labels(n: int) -> list[str]:
@@ -406,13 +435,25 @@ if st.button("Run CRD ANOVA", type="primary"):
         st.error("No numeric observations found. Enter at least one value or upload a valid file.")
         st.stop()
 
-    res = anova_crd(df, include_workings=True)
+    try:
+        res = crd_analyze(
+            df,
+            response="y",
+            treatment="treatment",
+            return_tables=("anova",),
+            dump="doe",
+        )
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
 
     st.subheader("ANOVA table")
-    table = res.table
+    table = getattr(res, "tables", {}).get("anova")
     if isinstance(table, pd.DataFrame):
-        table = table.reset_index()
-    st.dataframe(table, use_container_width=True)
+        table = table.reset_index(drop=True)
+        st.dataframe(table, use_container_width=True)
+    else:
+        st.info("No ANOVA table was returned.")
 
     with st.expander("Show intermediate quantities"):
         wtab = workings_to_table(getattr(res, "workings", {}))

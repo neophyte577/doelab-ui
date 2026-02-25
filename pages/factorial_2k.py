@@ -1,12 +1,11 @@
 from itertools import product
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from doelab import anova_factorial
-from doelab.algebra.contrasts import factorial_contrasts
-from doelab.core.spec import DesignKind, DesignSpec
+from doelab import factorial_2k_analyze
 
 from utils.parser_factorial import (
     auto_factor_names,
@@ -24,21 +23,47 @@ st.title("2^k Factorial Design")
 st.caption("Balanced 2-level factorial (2^k) under a CRD")
 
 
-def workings_to_table(workings: dict) -> pd.DataFrame:
+def _coerce_scalar_for_display(v):
+    if isinstance(v, (dict, list, tuple, set)):
+        return str(v)
+    if isinstance(v, (float, np.floating)):
+        return float(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    return v
+
+
+def _flatten_mapping(x, prefix: str = "") -> list[dict]:
     rows = []
-    for k, v in (workings or {}).items():
-        if isinstance(v, (dict, list, tuple, set)):
-            v_disp = str(v)
-        elif isinstance(v, (float, np.floating)):
-            v_disp = float(v)
-        elif isinstance(v, (int, np.integer)):
-            v_disp = int(v)
-        elif isinstance(v, (bool, np.bool_)):
-            v_disp = bool(v)
-        else:
-            v_disp = v
-        rows.append({"quantity": k, "value": v_disp})
-    return pd.DataFrame(rows)
+    if x is None:
+        return rows
+
+    if isinstance(x, Mapping):
+        for k, v in x.items():
+            key = f"{prefix}{k}" if prefix else str(k)
+            if isinstance(v, Mapping):
+                rows.extend(_flatten_mapping(v, prefix=f"{key}."))
+            else:
+                rows.append({"quantity": key, "value": _coerce_scalar_for_display(v)})
+        return rows
+
+    rows.append({"quantity": prefix.rstrip("."), "value": _coerce_scalar_for_display(x)})
+    return rows
+
+
+def workings_to_table(workings) -> pd.DataFrame:
+    if not isinstance(workings, Mapping) or not workings:
+        return pd.DataFrame(columns=["quantity", "value"])
+
+    doe = workings.get("doe", None)
+    if isinstance(doe, Mapping):
+        rows = _flatten_mapping(doe, prefix="doe.")
+    else:
+        rows = _flatten_mapping(workings, prefix="")
+
+    return pd.DataFrame(rows, columns=["quantity", "value"])
 
 
 def _make_grid(factors: list[str], r: int) -> pd.DataFrame:
@@ -255,7 +280,6 @@ if k == 2:
         options=["Tuple table", "+/- grid"],
         key="ff_view_toggle",
     )
-
 else:
     view = "+/- grid"
 
@@ -439,48 +463,45 @@ if st.button("Run ANOVA", type="primary"):
             st.error(f"This page is for 2-level factors only. Factor {f!r} has levels: {lv}.")
             st.stop()
 
-    spec = DesignSpec(kind=DesignKind.FACTORIAL, response="y", factors=factors)
-
     try:
-        res = anova_factorial(df_long, spec=spec, include_workings=True)
+        res = factorial_2k_analyze(
+            df_long,
+            response="y",
+            factors=factors,
+            factor_cols=factors,
+            require_complete_cells=True,
+            require_replication_per_cell=True,
+            min_cell_reps=2,
+            allow_unbalanced=False,
+            return_tables=("anova", "effects"),
+            dump="doe",
+            copy=True,
+        )
     except Exception as e:
         st.error(str(e))
         st.stop()
 
     st.subheader("ANOVA table")
-    table = res.table
+    table = getattr(res, "tables", {}).get("anova")
     if isinstance(table, pd.DataFrame):
-        table = table.reset_index(drop=True)
-    st.dataframe(table, use_container_width=True)
+        st.dataframe(table.reset_index(drop=True), use_container_width=True)
+    else:
+        st.info("No ANOVA table was returned.")
 
     with st.expander("Show contrasts (Fisher–Yates–Kempthorne for 2^k)"):
-        try:
-            c = factorial_contrasts(
-                df_long,
-                response="y",
-                factors=factors,
-                contrast_kind="2k",
-                relabel=True,
-                require_balanced=True,
-                require_replication=True,
+        eff = getattr(res, "tables", {}).get("effects")
+
+        if not isinstance(eff, pd.DataFrame) or eff.empty:
+            st.info("No effects/contrast table was returned.")
+        else:
+            terms_df = eff[["term"]].copy()
+            terms_df["factors"] = terms_df["term"].astype(str).apply(
+                lambda t: ", ".join([x for x in str(t).split(":") if x.strip()])
             )
+            st.dataframe(terms_df.reset_index(drop=True), use_container_width=True)
 
-            terms_df = c["terms"].copy()
-            if "term" in terms_df.columns:
-                terms_df["term"] = terms_df["term"].astype(str).str.replace("*", "", regex=False)
-            if "factors" in terms_df.columns:
-                terms_df["factors"] = terms_df["factors"].astype(str).str.replace("*", "", regex=False)
-
-            st.dataframe(terms_df, use_container_width=True)
-
-            eff_df = c["effects"].copy()
-            if "factors" in eff_df.columns:
-                eff_df["factors"] = eff_df["factors"].astype(str).str.replace("*", "", regex=False)
-
-            st.dataframe(eff_df, use_container_width=True)
-
-        except Exception as e:
-            st.error(str(e))
+            eff_df = eff.copy()
+            st.dataframe(eff_df.reset_index(drop=True), use_container_width=True)
 
     with st.expander("Show intermediate quantities"):
         wtab = workings_to_table(getattr(res, "workings", {}))
