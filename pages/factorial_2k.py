@@ -85,15 +85,37 @@ def _seed_grid_defaults(grid: pd.DataFrame, factors: list[str], r: int) -> pd.Da
     if not obs_cols:
         return g
 
+    default_grid = {
+        ("-", "-"): [28.0, 25.0, 27.0],
+        ("+", "-"): [36.0, 32.0, 32.0],
+        ("-", "+"): [18.0, 19.0, 23.0],
+        ("+", "+"): [31.0, 30.0, 29.0],
+    }
+
     def _is_hi(v: str) -> bool:
         return str(v).strip() == "+"
 
+    if len(factors) == 2:
+        a, b = factors[0], factors[1]
+        for i in range(len(g)):
+            key = (str(g.loc[g.index[i], a]).strip(), str(g.loc[g.index[i], b]).strip())
+            vals = default_grid.get(key)
+            if not vals:
+                continue
+            for j, c in enumerate(sorted(obs_cols, key=lambda x: int(str(x).split()[-1]))):
+                if j < len(vals) and j < int(r):
+                    g.loc[g.index[i], c] = float(vals[j])
+                else:
+                    g.loc[g.index[i], c] = np.nan
+        return g
+
+    # fallback
     base = 50.0
     step = 10.0
     for i in range(len(g)):
         ups = sum(_is_hi(g.loc[g.index[i], f]) for f in factors)
         v0 = base + step * ups
-        for j, c in enumerate(obs_cols):
+        for j, c in enumerate(sorted(obs_cols, key=lambda x: int(str(x).split()[-1]))):
             g.loc[g.index[i], c] = float(v0 + 2.0 * j)
     return g
 
@@ -101,15 +123,22 @@ def _seed_grid_defaults(grid: pd.DataFrame, factors: list[str], r: int) -> pd.Da
 def _make_tuple_2x2_table(f1: str, f2: str, r: int) -> pd.DataFrame:
     df = pd.DataFrame({f"{f1}1": ["", ""], f"{f1}2": ["", ""]}, index=[f"{f2}1", f"{f2}2"])
 
-    base = 60.0
-    for i in range(2):
-        for j, col in enumerate([f"{f1}1", f"{f1}2"]):
-            v0 = base + 10.0 * i + 8.0 * j
-            reps = [f"{(v0 + 2.0*k):.1f}" for k in range(r)]
-            df.loc[df.index[i], col] = ", ".join(reps)
+    default_data = {
+        ("1", "1"): [28.0, 25.0, 27.0],  # A low, B low
+        ("2", "1"): [36.0, 32.0, 32.0],  # A high, B low
+        ("1", "2"): [18.0, 19.0, 23.0],  # A low, B high
+        ("2", "2"): [31.0, 30.0, 29.0],  # A high, B high
+    }
+
+    for b_level, b_idx in [("1", 0), ("2", 1)]:
+        for a_level, a_col in [("1", f"{f1}1"), ("2", f"{f1}2")]:
+            vals = default_data.get((a_level, b_level), [])
+            reps = [str(float(vals[k])) for k in range(min(len(vals), int(r)))]
+            if int(r) > len(reps):
+                reps.extend([""] * (int(r) - len(reps)))
+            df.loc[df.index[b_idx], a_col] = ", ".join([x for x in reps if str(x).strip() != ""])
 
     return df
-
 
 def _design_fp(k: int, r: int, factors: list[str]) -> tuple:
     return (int(k), int(r), tuple(factors))
@@ -168,7 +197,7 @@ def _init_state() -> None:
     if "ff_k" not in st.session_state:
         st.session_state["ff_k"] = 2
     if "ff_r" not in st.session_state:
-        st.session_state["ff_r"] = 2
+        st.session_state["ff_r"] = 3
     if "ff_factors" not in st.session_state:
         st.session_state["ff_factors"] = auto_factor_names(int(st.session_state["ff_k"]))
 
