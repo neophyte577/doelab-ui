@@ -20,7 +20,8 @@ from utils.parser_factorial import (
 
 
 st.title("2^k Factorial Design")
-st.caption("Balanced 2-level factorial (2^k) under a CRD")
+st.caption('Balanced 2-level factorial (2^k) under a CRD')
+st.caption('Enter observations below, or upload a CSV/TSV to populate the analysis input.')
 
 
 def _coerce_scalar_for_display(v):
@@ -390,7 +391,6 @@ else:
 
                 st.session_state["ff_table_grid"] = tab
 
-# ----------------- Upload beneath editor (CRD-style placement) -----------------
 uploaded = st.file_uploader("Upload a CSV/TSV", type=["csv", "tsv", "txt"])
 st.caption("Accepted formats: • Long: y + factor columns • Wide: factor columns + Obs columns")
 
@@ -517,7 +517,7 @@ if st.button("Run ANOVA", type="primary"):
     else:
         st.info("No ANOVA table was returned.")
 
-    with st.expander("Show contrasts (Fisher–Yates–Kempthorne for 2^k)"):
+    with st.expander("Show contrasts"):
         eff = getattr(res, "tables", {}).get("effects")
 
         if not isinstance(eff, pd.DataFrame) or eff.empty:
