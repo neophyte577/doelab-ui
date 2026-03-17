@@ -21,7 +21,7 @@ from utils.parser_factorial import (
 
 st.title("2^k Factorial Design")
 st.caption('Balanced 2-level factorial (2^k) under a CRD')
-st.caption('Enter observations below, or upload a CSV/TSV to populate the analysis input.')
+st.caption('Enter observations below, or upload a CSV/TSV/XLSX to populate the analysis input.')
 
 
 def _coerce_scalar_for_display(v):
@@ -391,8 +391,9 @@ else:
 
                 st.session_state["ff_table_grid"] = tab
 
-uploaded = st.file_uploader("Upload a CSV/TSV", type=["csv", "tsv", "txt"])
-st.caption("Accepted formats: • Long: y + factor columns • Wide: factor columns + Obs columns")
+# ----------------- Upload beneath editor (CRD-style placement) -----------------
+uploaded = st.file_uploader("Upload a CSV/TSV/XLSX", type=["csv", "tsv", "txt", "xlsx"])
+st.caption("Accepted formats: • Long: y + factor columns • Wide: factor columns + Obs columns • Excel workbooks (.xlsx) with the same layouts")
 
 if uploaded is not None:
     try:

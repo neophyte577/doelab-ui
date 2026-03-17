@@ -1,5 +1,6 @@
 import io
 import hashlib
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ from collections.abc import Mapping
 
 
 st.title("Completely Randomized Design")
-st.caption("Enter observations below, or upload a CSV/TSV to populate the analysis input.")
+st.caption("Enter observations below, or upload a CSV/TSV/XLSX to populate the analysis input.")
 
 
 def grid_to_long(df_grid: pd.DataFrame) -> pd.DataFrame:
@@ -93,7 +94,6 @@ def _flatten_mapping(x, prefix: str = "") -> list[dict]:
 
 
 def workings_to_table(workings) -> pd.DataFrame:
-    # New library returns frozen mappings (often MappingProxyType), not necessarily dict.
     if not isinstance(workings, Mapping) or not workings:
         return pd.DataFrame(columns=["quantity", "value"])
 
@@ -156,6 +156,24 @@ def _read_table_flexible(text: str, header: int | None) -> pd.DataFrame:
     return df
 
 
+def _is_excel_upload(uploaded_file) -> bool:
+    suffix = Path(getattr(uploaded_file, "name", "")).suffix.lower()
+    return suffix in {".xlsx"}
+
+
+def _read_uploaded_table(uploaded_file, header: int | None) -> pd.DataFrame:
+    if _is_excel_upload(uploaded_file):
+        uploaded_file.seek(0)
+        return pd.read_excel(uploaded_file, header=header)
+
+    content = uploaded_file.getvalue()
+    try:
+        txt = content.decode("utf-8")
+    except Exception:
+        txt = content.decode("latin-1")
+    return _read_table_flexible(txt, header)
+
+
 def _grid_to_long_from_matrix(mat: pd.DataFrame, row_labels: list[str]) -> pd.DataFrame:
     m = mat.copy()
     for c in m.columns:
@@ -182,13 +200,7 @@ def _grid_to_long_from_matrix(mat: pd.DataFrame, row_labels: list[str]) -> pd.Da
 
 
 def parse_uploaded_table(uploaded_file) -> pd.DataFrame:
-    content = uploaded_file.getvalue()
-    try:
-        txt = content.decode("utf-8")
-    except Exception:
-        txt = content.decode("latin-1")
-
-    df0 = _read_table_flexible(txt, header=0)
+    df0 = _read_uploaded_table(uploaded_file, header=0)
 
     cols_lower = {str(c).strip().lower(): c for c in df0.columns}
     if "treatment" in cols_lower and "y" in cols_lower:
@@ -202,7 +214,7 @@ def parse_uploaded_table(uploaded_file) -> pd.DataFrame:
         out = out.dropna(subset=["y"])
         return out.reset_index(drop=True)
 
-    dfN = _read_table_flexible(txt, header=None)
+    dfN = _read_uploaded_table(uploaded_file, header=None)
 
     first_row_vals = dfN.iloc[0].tolist() if not dfN.empty else []
     header_evidence = _row_looks_like_header(first_row_vals)
@@ -251,6 +263,24 @@ def parse_uploaded_table(uploaded_file) -> pd.DataFrame:
         return pd.DataFrame(columns=["treatment", "y"])
 
     return _grid_to_long_from_matrix(mat, row_labels)
+
+
+def _analysis_mode_to_label(mode: str) -> str:
+    return "random" if str(mode).strip() == "Random Factors" else "fixed"
+
+
+def _crd_mode_kwargs(mode: str) -> dict:
+    label = _analysis_mode_to_label(mode)
+    if label == "random":
+        return {"treatment_role": "random"}
+    return {"treatment_role": "fixed"}
+
+
+def _crd_return_tables(mode: str) -> tuple[str, ...]:
+    label = _analysis_mode_to_label(mode)
+    if label == "random":
+        return ("anova", "variance_components", "random_groups", "random_effects")
+    return ("anova",)
 
 
 def reconcile_grid(existing: pd.DataFrame, treatments: list[str], n_obs: int) -> pd.DataFrame:
@@ -329,6 +359,9 @@ def _init_state() -> None:
     if "crd_last_upload_sig" not in st.session_state:
         st.session_state["crd_last_upload_sig"] = None
 
+    if "crd_factor_mode" not in st.session_state:
+        st.session_state["crd_factor_mode"] = "Fixed Factors"
+
 
 def _apply_pending_widget_updates() -> None:
     if not st.session_state.get("crd_pending_widget_update"):
@@ -356,7 +389,6 @@ def _upload_signature(uploaded) -> str:
 _init_state()
 _apply_pending_widget_updates()
 
-# ----------------- Manual grid input (persisted) -----------------
 n_treatments = st.number_input(
     "Number of treatments",
     min_value=1,
@@ -376,6 +408,12 @@ n_obs = st.number_input(
 st.session_state["crd_n_treatments"] = int(n_treatments)
 st.session_state["crd_n_obs"] = int(n_obs)
 
+st.segmented_control(
+    "Factor mode",
+    options=["Fixed Factors", "Random Factors"],
+    key="crd_factor_mode",
+)
+
 treatments = _desired_treatment_labels(st.session_state["crd_grid"], int(n_treatments))
 desired_grid = reconcile_grid(st.session_state["crd_grid"], treatments, int(n_obs))
 
@@ -388,10 +426,9 @@ edited = st.data_editor(
 
 st.session_state["crd_grid"] = edited.copy()
 
-# ----------------- Upload beneath grid (populates grid + persists) -----------------
-uploaded = st.file_uploader("Upload a CSV/TSV", type=["csv", "tsv", "txt"])
+uploaded = st.file_uploader("Upload a CSV/TSV/XLSX", type=["csv", "tsv", "txt", "xlsx"])
 st.caption(
-    "Accepted formats (CSV/TSV/semicolon/whitespace delimited):\n"
+    "Accepted formats (CSV/TSV/XLSX/semicolon/whitespace delimited):\n"
     "• Long: columns treatment,y\n"
     "• Wide: numeric matrix (headers/labels optional). If labels are missing, rows are treated as A,B,C... and columns as Obs 1..k."
 )
@@ -427,7 +464,6 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Could not parse file: {e}")
 
-# ----------------- Run analysis -----------------
 if st.button("Run CRD ANOVA", type="primary"):
     df = grid_to_long(st.session_state["crd_grid"])
 
@@ -435,25 +471,53 @@ if st.button("Run CRD ANOVA", type="primary"):
         st.error("No numeric observations found. Enter at least one value or upload a valid file.")
         st.stop()
 
+    mode = st.session_state.get("crd_factor_mode", "Fixed Factors")
+    mode_kwargs = _crd_mode_kwargs(mode)
+
     try:
         res = crd_analyze(
             df,
             response="y",
             treatment="treatment",
-            return_tables=("anova",),
+            return_tables=_crd_return_tables(mode),
             dump="doe",
+            **mode_kwargs,
         )
     except Exception as e:
         st.error(str(e))
         st.stop()
 
-    st.subheader("ANOVA table")
-    table = getattr(res, "tables", {}).get("anova")
-    if isinstance(table, pd.DataFrame):
-        table = table.reset_index(drop=True)
-        st.dataframe(table, use_container_width=True)
+    tables = getattr(res, "tables", {})
+
+    anova = tables.get("anova")
+    title = "ANOVA table" if _analysis_mode_to_label(mode) == "fixed" else "ANOVA Table"
+    st.subheader(title)
+    if isinstance(anova, pd.DataFrame):
+        st.dataframe(anova.reset_index(drop=True), use_container_width=True)
     else:
         st.info("No ANOVA table was returned.")
+
+    if _analysis_mode_to_label(mode) == "random":
+        st.subheader("Variance components")
+        vc = tables.get("variance_components")
+        if isinstance(vc, pd.DataFrame):
+            st.dataframe(vc.reset_index(drop=True), use_container_width=True)
+        else:
+            st.info("No variance components table was returned.")
+
+        st.subheader("Random groups")
+        rg = tables.get("random_groups")
+        if isinstance(rg, pd.DataFrame):
+            st.dataframe(rg.reset_index(drop=True), use_container_width=True)
+        else:
+            st.info("No random groups table was returned.")
+
+        st.subheader("Random effects")
+        re = tables.get("random_effects")
+        if isinstance(re, pd.DataFrame):
+            st.dataframe(re.reset_index(drop=True), use_container_width=True)
+        else:
+            st.info("No random effects table was returned.")
 
     with st.expander("Show intermediate quantities"):
         wtab = workings_to_table(getattr(res, "workings", {}))

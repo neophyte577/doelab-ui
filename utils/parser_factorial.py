@@ -1,5 +1,6 @@
 import io
 import hashlib
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -41,6 +42,24 @@ def read_table_flexible(text: str, header: Optional[int]) -> pd.DataFrame:
                     return df_ws
 
     return df
+
+
+def is_excel_upload(uploaded_file) -> bool:
+    suffix = Path(getattr(uploaded_file, "name", "")).suffix.lower()
+    return suffix in {".xlsx"}
+
+
+def read_uploaded_table(uploaded_file, header: Optional[int]) -> pd.DataFrame:
+    if is_excel_upload(uploaded_file):
+        uploaded_file.seek(0)
+        return pd.read_excel(uploaded_file, header=header)
+
+    content = uploaded_file.getvalue()
+    try:
+        txt = content.decode("utf-8")
+    except Exception:
+        txt = content.decode("latin-1")
+    return read_table_flexible(txt, header=header)
 
 
 def map_12_to_pm(d: pd.DataFrame, factors: list[str]) -> pd.DataFrame:
@@ -215,11 +234,14 @@ def tuple_2x2_to_long(table_grid: pd.DataFrame, f1: str, f2: str) -> pd.DataFram
 
 
 def parse_uploaded_table_factorial(uploaded_file) -> tuple[pd.DataFrame, list[str]]:
-    content = uploaded_file.getvalue()
-    try:
-        txt = content.decode("utf-8")
-    except Exception:
-        txt = content.decode("latin-1")
+    if is_excel_upload(uploaded_file):
+        txt = ""
+    else:
+        content = uploaded_file.getvalue()
+        try:
+            txt = content.decode("utf-8")
+        except Exception:
+            txt = content.decode("latin-1")
 
     def _clean_levels(s: pd.Series) -> pd.Series:
         v = s.astype(str).str.strip()
@@ -391,7 +413,7 @@ def parse_uploaded_table_factorial(uploaded_file) -> tuple[pd.DataFrame, list[st
     headerless_hint = _looks_headerless_by_first_row(txt)
 
     if not headerless_hint:
-        df0 = read_table_flexible(txt, header=0)
+        df0 = read_uploaded_table(uploaded_file, header=0)
         df0.columns = [str(c).strip() for c in df0.columns]
         cols_lower = {str(c).strip().lower(): c for c in df0.columns}
 
@@ -448,7 +470,7 @@ def parse_uploaded_table_factorial(uploaded_file) -> tuple[pd.DataFrame, list[st
                     long = grid_to_long(grid, list(factor_pos))
                     return long, [str(c).strip() for c in factor_pos]
 
-    dfN = read_table_flexible(txt, header=None)
+    dfN = read_uploaded_table(uploaded_file, header=None)
     if dfN is None or dfN.empty or dfN.shape[1] < 2:
         return pd.DataFrame(), []
 
