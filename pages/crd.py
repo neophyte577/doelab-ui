@@ -1,14 +1,13 @@
 import io
 import hashlib
 from pathlib import Path
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from doelab import crd_analyze
-
-from collections.abc import Mapping
 
 
 st.title("Completely Randomized Design")
@@ -174,7 +173,7 @@ def _read_uploaded_table(uploaded_file, header: int | None) -> pd.DataFrame:
     return _read_table_flexible(txt, header)
 
 
-def _grid_to_long_from_matrix(mat: pd.DataFrame, row_labels: list[str]) -> pd.DataFrame:
+def _grid_to_long(mat: pd.DataFrame, row_labels: list[str]) -> pd.DataFrame:
     m = mat.copy()
     for c in m.columns:
         m[c] = pd.to_numeric(m[c], errors="coerce")
@@ -262,22 +261,228 @@ def parse_uploaded_table(uploaded_file) -> pd.DataFrame:
     if not np.isfinite(arr).any():
         return pd.DataFrame(columns=["treatment", "y"])
 
-    return _grid_to_long_from_matrix(mat, row_labels)
+    return _grid_to_long(mat, row_labels)
 
 
-def _analysis_mode_to_label(mode: str) -> str:
+def _format_grid_cell_value(v) -> str:
+    if pd.isna(v):
+        return ""
+    if isinstance(v, (int, np.integer)):
+        return str(int(v))
+    if isinstance(v, (float, np.floating)):
+        return format(float(v), ".10g")
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
+
+
+def _inject_crd_grid_css() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .crd-grid-header,
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .crd-grid-cell,
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .crd-grid-rowlabel {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 2.5rem;
+            display: flex;
+            align-items: center;
+            border: 1px solid rgba(49, 51, 63, 0.18);
+            border-radius: 0.55rem;
+            padding: 0.45rem 0.7rem;
+            margin-bottom: 0.3rem;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        .crd-grid-header {
+            font-weight: 600;
+            background: white;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .crd-grid-rowlabel {
+            font-weight: 600;
+            background: white;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .crd-grid-note {
+            margin: 0.2rem 0 0.7rem 0;
+            color: rgba(49, 51, 63, 0.8);
+            font-size: 0.95rem;
+        }
+        div[data-testid="stTextInput"] input {
+            text-align: center;
+            border-radius: 0.7rem;
+            background: rgba(248, 248, 250, 0.95);
+        }
+        div[data-testid="stNumberInput"] {
+            max-width: 15.5rem;
+        }
+        div[data-testid="stSegmentedControl"] {
+            width: 100%;
+            max-width: 18.6rem;
+        }
+        div[data-testid="stSegmentedControl"] > div {
+            width: 100%;
+        }
+        div[data-testid="stSegmentedControl"] [role="radiogroup"] {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+        }
+        div[data-testid="stSegmentedControl"] label {
+            justify-content: center;
+            min-width: 0;
+            width: 100%;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _grid_signature(df: pd.DataFrame) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    rows = tuple(df.index.astype(str).tolist())
+    cols = tuple(df.columns.astype(str).tolist())
+    return rows, cols
+
+
+def _sync_crd_grid_widget_state(
+    desired: pd.DataFrame,
+    state_key: str = "crd_grid_widget_values",
+    schema_key: str = "crd_grid_widget_schema",
+) -> None:
+    desired_rows = desired.index.astype(str).tolist()
+    desired_cols = desired.columns.astype(str).tolist()
+    desired_map = {
+        r: {c: _format_grid_cell_value(desired.loc[r, c]) for c in desired_cols}
+        for r in desired_rows
+    }
+    desired_schema = (tuple(desired_rows), tuple(desired_cols))
+
+    existing_schema = st.session_state.get(schema_key)
+    existing_map = st.session_state.get(state_key, {})
+    force_reset = existing_schema != desired_schema or not isinstance(existing_map, dict)
+
+    active_keys = {f"crd_cell::{r}::{c}" for r in desired_rows for c in desired_cols}
+
+    for key in list(st.session_state.keys()):
+        if key.startswith("crd_cell::") and key not in active_keys:
+            del st.session_state[key]
+
+    if force_reset:
+        for r in desired_rows:
+            for c in desired_cols:
+                st.session_state[f"crd_cell::{r}::{c}"] = desired_map[r][c]
+        st.session_state[state_key] = desired_map
+        st.session_state[schema_key] = desired_schema
+        return
+
+    clean_map = {}
+    for r in desired_rows:
+        clean_map[r] = {}
+        row_existing = existing_map.get(r, {}) if isinstance(existing_map.get(r), dict) else {}
+        for c in desired_cols:
+            key = f"crd_cell::{r}::{c}"
+            if key not in st.session_state:
+                st.session_state[key] = str(row_existing.get(c, desired_map[r][c]))
+            clean_map[r][c] = str(st.session_state[key])
+
+    st.session_state[state_key] = clean_map
+    st.session_state[schema_key] = desired_schema
+
+
+def render_crd_input_grid(
+    desired_grid: pd.DataFrame,
+    state_key: str = "crd_grid_widget_values",
+    schema_key: str = "crd_grid_widget_schema",
+) -> pd.DataFrame:
+    _inject_crd_grid_css()
+    _sync_crd_grid_widget_state(desired_grid, state_key=state_key, schema_key=schema_key)
+
+    rows = desired_grid.index.astype(str).tolist()
+    cols = desired_grid.columns.astype(str).tolist()
+
+    st.markdown(
+        '<div class="crd-grid-note">Click into any cell and type a number. Leave blanks empty.</div>',
+        unsafe_allow_html=True,
+    )
+
+    treatment_col_width_rem = 8.1
+    data_col_width_rem = 8.0
+    widths = [treatment_col_width_rem] + [data_col_width_rem] * len(cols)
+
+    header_cols = st.columns(widths)
+    with header_cols[0]:
+        st.markdown('<div class="crd-grid-header">Treatment</div>', unsafe_allow_html=True)
+    for j, col_name in enumerate(cols, start=1):
+        with header_cols[j]:
+            st.markdown(f'<div class="crd-grid-header">{col_name}</div>', unsafe_allow_html=True)
+
+    out_rows = []
+    new_state_map = {}
+    for row_name in rows:
+        line_cols = st.columns(widths)
+        with line_cols[0]:
+            st.markdown(f'<div class="crd-grid-rowlabel">{row_name}</div>', unsafe_allow_html=True)
+
+        row_out = []
+        row_state = {}
+        for j, col_name in enumerate(cols, start=1):
+            input_key = f"crd_cell::{row_name}::{col_name}"
+            with line_cols[j]:
+                typed = st.text_input(
+                    f"{row_name} {col_name}",
+                    key=input_key,
+                    label_visibility="collapsed",
+                    placeholder="",
+                )
+            typed = str(typed).strip()
+            row_state[col_name] = typed
+            row_out.append(pd.to_numeric(typed, errors="coerce"))
+
+        new_state_map[row_name] = row_state
+        out_rows.append(row_out)
+
+    st.session_state[state_key] = new_state_map
+    st.session_state[schema_key] = (tuple(rows), tuple(cols))
+
+    out = pd.DataFrame(out_rows, index=rows, columns=cols)
+    out.index.name = "Treatment"
+    return out
+
+
+def render_crd_input_grid_native(desired_grid: pd.DataFrame) -> pd.DataFrame:
+    edited = st.data_editor(
+        desired_grid,
+        use_container_width=True,
+        hide_index=False,
+        key="crd_editor_native",
+    )
+
+    out = edited.copy()
+    out.index = out.index.astype(str).str.strip()
+    out.index.name = "Treatment"
+
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    return out
+
+
+def _analysis_mode_label(mode: str) -> str:
     return "random" if str(mode).strip() == "Random Factors" else "fixed"
 
 
 def _crd_mode_kwargs(mode: str) -> dict:
-    label = _analysis_mode_to_label(mode)
+    label = _analysis_mode_label(mode)
     if label == "random":
         return {"treatment_role": "random"}
     return {"treatment_role": "fixed"}
 
 
 def _crd_return_tables(mode: str) -> tuple[str, ...]:
-    label = _analysis_mode_to_label(mode)
+    label = _analysis_mode_label(mode)
     if label == "random":
         return ("anova", "variance_components", "random_groups", "random_effects")
     return ("anova",)
@@ -326,9 +531,9 @@ def _desired_treatment_labels(existing_grid: pd.DataFrame, n_treatments: int) ->
 
 def _init_state() -> None:
     if "crd_n_treatments" not in st.session_state:
-        st.session_state["crd_n_treatments"] = 3
+        st.session_state["crd_n_treatments"] = 4
     if "crd_n_obs" not in st.session_state:
-        st.session_state["crd_n_obs"] = 2
+        st.session_state["crd_n_obs"] = 5
 
     if "crd_grid" not in st.session_state:
         n_t = int(st.session_state["crd_n_treatments"])
@@ -337,8 +542,17 @@ def _init_state() -> None:
         cols = [f"Obs {i+1}" for i in range(n_o)]
 
         seed = None
-        if treatments == ["A", "B", "C"] and n_o == 2:
-            seed = pd.DataFrame([[10, 12], [13, 15], [9, 11]], index=treatments, columns=cols)
+        if treatments == ["A", "B", "C", "D"] and n_o == 5:
+            seed = pd.DataFrame(
+                [
+                    [575, 542, 530, 539, 570],
+                    [565, 593, 590, 579, 610],
+                    [600, 651, 610, 637, 629],
+                    [725, 700, 715, 685, 710],
+                ],
+                index=treatments,
+                columns=cols,
+            )
 
         grid = seed if seed is not None else pd.DataFrame(np.nan, index=treatments, columns=cols)
         grid.index.name = "Treatment"
@@ -361,6 +575,9 @@ def _init_state() -> None:
 
     if "crd_factor_mode" not in st.session_state:
         st.session_state["crd_factor_mode"] = "Fixed Factors"
+
+    if "crd_use_native_table" not in st.session_state:
+        st.session_state["crd_use_native_table"] = False
 
 
 def _apply_pending_widget_updates() -> None:
@@ -385,44 +602,106 @@ def _upload_signature(uploaded) -> str:
     h = hashlib.sha256(b).hexdigest()
     return f"{uploaded.name}|{len(b)}|{h}"
 
+def _format_named_mapping(x) -> str:
+    if isinstance(x, Mapping):
+        return ", ".join(f"{k}={v:.4g}" if isinstance(v, (int, float, np.integer, np.floating)) else f"{k}={v}" for k, v in x.items())
+    return str(x)
+
+
+def crd_intermediate_quantities_table(res) -> pd.DataFrame:
+    workings = getattr(res, "workings", None)
+    if not isinstance(workings, Mapping):
+        return pd.DataFrame(columns=["quantity", "value"])
+
+    crd = workings.get("doe", {}).get("crd", {})
+    if not isinstance(crd, Mapping):
+        return pd.DataFrame(columns=["quantity", "value"])
+
+    rows = []
+
+    # Means
+    if "mean_by_treatment" in crd:
+        rows.append({
+            "quantity": "Treatment means",
+            "value": _format_named_mapping(crd["mean_by_treatment"]),
+        })
+
+    if "grand_mean" in crd:
+        rows.append({
+            "quantity": "Grand mean",
+            "value": float(crd["grand_mean"]),
+        })
+
+    # SS
+    ss = crd.get("ss", {})
+    if isinstance(ss, Mapping):
+        if "treatment" in ss:
+            rows.append({"quantity": "SS_Treat", "value": round(float(ss["treatment"]),2)})
+        if "error" in ss:
+            rows.append({"quantity": "SS_Error", "value": round(float(ss["error"]),2)})
+        if "total" in ss:
+            rows.append({"quantity": "SS_Total", "value": round(float(ss["total"]), 2)})
+
+    # MS
+    ms = crd.get("ms", {})
+    if isinstance(ms, Mapping):
+        if "treatment" in ms:
+            rows.append({"quantity": "MS_Treat", "value": round(float(ms["treatment"]), 2)})
+        if "error" in ms:
+            rows.append({"quantity": "MS_Error", "value": round(float(ms["error"]),2)})
+
+    return pd.DataFrame(rows, columns=["quantity", "value"])
+
 
 _init_state()
 _apply_pending_widget_updates()
+_inject_crd_grid_css()
 
-n_treatments = st.number_input(
-    "Number of treatments",
-    min_value=1,
-    max_value=200,
-    step=1,
-    key="crd_n_treatments_widget",
+st.toggle(
+    "Mobile-friendly table",
+    key="crd_use_native_table",
+    help="Switch to Streamlit's native table editor, which may work better on small screens.",
 )
 
-n_obs = st.number_input(
-    "Observations per treatment",
-    min_value=1,
-    max_value=50,
-    step=1,
-    key="crd_n_obs_widget",
-)
+selector_cols = st.columns([0.8, 0.8, 1.18])
+
+with selector_cols[0]:
+    n_treatments = st.number_input(
+        "Number of treatments",
+        min_value=1,
+        max_value=200,
+        step=1,
+        key="crd_n_treatments_widget",
+    )
+
+with selector_cols[1]:
+    n_obs = st.number_input(
+        "Observations per treatment",
+        min_value=1,
+        max_value=50,
+        step=1,
+        key="crd_n_obs_widget",
+    )
+
+with selector_cols[2]:
+    st.segmented_control(
+        "Factor mode",
+        options=["Fixed Factors", "Random Factors"],
+        key="crd_factor_mode",
+    )
+
+
 
 st.session_state["crd_n_treatments"] = int(n_treatments)
 st.session_state["crd_n_obs"] = int(n_obs)
 
-st.segmented_control(
-    "Factor mode",
-    options=["Fixed Factors", "Random Factors"],
-    key="crd_factor_mode",
-)
-
 treatments = _desired_treatment_labels(st.session_state["crd_grid"], int(n_treatments))
 desired_grid = reconcile_grid(st.session_state["crd_grid"], treatments, int(n_obs))
 
-edited = st.data_editor(
-    desired_grid,
-    use_container_width=True,
-    hide_index=False,
-    key="crd_editor",
-)
+if st.session_state.get("crd_use_native_table", False):
+    edited = render_crd_input_grid_native(desired_grid)
+else:
+    edited = render_crd_input_grid(desired_grid)
 
 st.session_state["crd_grid"] = edited.copy()
 
@@ -490,41 +769,51 @@ if st.button("Run CRD ANOVA", type="primary"):
     tables = getattr(res, "tables", {})
 
     anova = tables.get("anova")
-    title = "ANOVA table" if _analysis_mode_to_label(mode) == "fixed" else "ANOVA Table"
+    title = "ANOVA table" if _analysis_mode_label(mode) == "fixed" else "ANOVA Table"
     st.subheader(title)
     if isinstance(anova, pd.DataFrame):
-        st.dataframe(anova.reset_index(drop=True), use_container_width=True)
+        st.dataframe(anova.reset_index(drop=True), use_container_width=True, hide_index=True)
     else:
         st.info("No ANOVA table was returned.")
 
-    if _analysis_mode_to_label(mode) == "random":
+    if _analysis_mode_label(mode) == "random":
         st.subheader("Variance components")
         vc = tables.get("variance_components")
         if isinstance(vc, pd.DataFrame):
-            st.dataframe(vc.reset_index(drop=True), use_container_width=True)
+            st.dataframe(vc.reset_index(drop=True), use_container_width=True, hide_index=True)
         else:
             st.info("No variance components table was returned.")
 
         st.subheader("Random groups")
         rg = tables.get("random_groups")
         if isinstance(rg, pd.DataFrame):
-            st.dataframe(rg.reset_index(drop=True), use_container_width=True)
+            st.dataframe(rg.reset_index(drop=True), use_container_width=True, hide_index=True)
         else:
             st.info("No random groups table was returned.")
 
         st.subheader("Random effects")
         re = tables.get("random_effects")
         if isinstance(re, pd.DataFrame):
-            st.dataframe(re.reset_index(drop=True), use_container_width=True)
+            keep = [c for c in ["level", "estimate"] if c in re.columns]
+            re_display = re.loc[:, keep] if keep else re.copy()
+            re_display.index = [""] * len(re_display)
+            if "estimate" in re_display.columns:
+                re_display["estimate"] = pd.to_numeric(re_display["estimate"], errors="coerce").round(4)
+
+            left, right = st.columns([1.2, 2.8])
+            with left:
+                st.table(re_display.reset_index(drop=True))
         else:
             st.info("No random effects table was returned.")
-
+            
     with st.expander("Show intermediate quantities"):
-        wtab = workings_to_table(getattr(res, "workings", {}))
-        if wtab.empty:
-            st.info("No intermediate quantities were returned.")
+        wt = crd_intermediate_quantities_table(res)
+        if not wt.empty:
+            st.dataframe(wt, use_container_width=True, hide_index=True)
         else:
-            st.dataframe(wtab, use_container_width=True)
+            st.info("No intermediate quantities were returned.")
 
     with st.expander("Show data used (long format)"):
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+   

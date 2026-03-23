@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+
+
 try:
     from doelab import rcbd_analyze
 except Exception:
@@ -274,6 +276,190 @@ def parse_uploaded_table(uploaded_file) -> pd.DataFrame:
     return _grid_to_long_from_matrix(mat, row_labels, col_labels)
 
 
+def _format_grid_cell_value(v) -> str:
+    if pd.isna(v):
+        return ""
+    if isinstance(v, (int, np.integer)):
+        return str(int(v))
+    if isinstance(v, (float, np.floating)):
+        return format(float(v), ".10g")
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
+
+
+def _inject_rcbd_grid_css() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .rcbd-grid-header,
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .rcbd-grid-cell,
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .rcbd-grid-rowlabel {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 2.5rem;
+            display: flex;
+            align-items: center;
+            border: 1px solid rgba(49, 51, 63, 0.18);
+            border-radius: 0.55rem;
+            padding: 0.45rem 0.7rem;
+            margin-bottom: 0.3rem;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        .rcbd-grid-header {
+            font-weight: 600;
+            background: white;
+            text-align: center;
+            white-space: nowrap;
+            justify-content: center;
+        }
+        .rcbd-grid-rowlabel {
+            font-weight: 600;
+            background: white;
+            text-align: center;
+            white-space: nowrap;
+            justify-content: center;
+        }
+        .rcbd-grid-note {
+            margin: 0.2rem 0 0.7rem 0;
+            color: rgba(49, 51, 63, 0.8);
+            font-size: 0.95rem;
+        }
+        div[data-testid="stTextInput"] input {
+            text-align: center;
+            border-radius: 0.7rem;
+            background: rgba(248, 248, 250, 0.95);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _sync_rcbd_grid_widget_state(
+    desired: pd.DataFrame,
+    state_key: str = "rcbd_grid_widget_values",
+    schema_key: str = "rcbd_grid_widget_schema",
+) -> None:
+    desired_rows = desired.index.astype(str).tolist()
+    desired_cols = desired.columns.astype(str).tolist()
+    desired_map = {
+        r: {c: _format_grid_cell_value(desired.loc[r, c]) for c in desired_cols}
+        for r in desired_rows
+    }
+    desired_schema = (tuple(desired_rows), tuple(desired_cols))
+
+    existing_schema = st.session_state.get(schema_key)
+    existing_map = st.session_state.get(state_key, {})
+    force_reset = existing_schema != desired_schema or not isinstance(existing_map, dict)
+
+    active_keys = {f"rcbd_cell::{r}::{c}" for r in desired_rows for c in desired_cols}
+    for key in list(st.session_state.keys()):
+        if key.startswith("rcbd_cell::") and key not in active_keys:
+            del st.session_state[key]
+
+    if force_reset:
+        for r in desired_rows:
+            for c in desired_cols:
+                st.session_state[f"rcbd_cell::{r}::{c}"] = desired_map[r][c]
+        st.session_state[state_key] = desired_map
+        st.session_state[schema_key] = desired_schema
+        return
+
+    clean_map = {}
+    for r in desired_rows:
+        clean_map[r] = {}
+        row_existing = existing_map.get(r, {}) if isinstance(existing_map.get(r), dict) else {}
+        for c in desired_cols:
+            key = f"rcbd_cell::{r}::{c}"
+            if key not in st.session_state:
+                st.session_state[key] = str(row_existing.get(c, desired_map[r][c]))
+            clean_map[r][c] = str(st.session_state[key])
+
+    st.session_state[state_key] = clean_map
+    st.session_state[schema_key] = desired_schema
+
+
+def render_rcbd_input_grid(
+    desired_grid: pd.DataFrame,
+    state_key: str = "rcbd_grid_widget_values",
+    schema_key: str = "rcbd_grid_widget_schema",
+) -> pd.DataFrame:
+    _inject_rcbd_grid_css()
+    _sync_rcbd_grid_widget_state(desired_grid, state_key=state_key, schema_key=schema_key)
+
+    rows = desired_grid.index.astype(str).tolist()
+    cols = desired_grid.columns.astype(str).tolist()
+
+    st.markdown(
+        '<div class="rcbd-grid-note">Click into any cell and type a number. Leave blanks empty.</div>',
+        unsafe_allow_html=True,
+    )
+
+    label_width_rem = 8.1
+    data_width_rem = 8.0
+    widths = [label_width_rem] + [data_width_rem] * len(cols)
+
+    header_cols = st.columns(widths)
+    with header_cols[0]:
+        st.markdown('<div class="rcbd-grid-header">Treatment</div>', unsafe_allow_html=True)
+    for j, col_name in enumerate(cols, start=1):
+        with header_cols[j]:
+            st.markdown(f'<div class="rcbd-grid-header">{col_name}</div>', unsafe_allow_html=True)
+
+    out_rows = []
+    new_state_map = {}
+    for row_name in rows:
+        line_cols = st.columns(widths)
+        with line_cols[0]:
+            st.markdown(f'<div class="rcbd-grid-rowlabel">{row_name}</div>', unsafe_allow_html=True)
+
+        row_out = []
+        row_state = {}
+        for j, col_name in enumerate(cols, start=1):
+            input_key = f"rcbd_cell::{row_name}::{col_name}"
+            with line_cols[j]:
+                typed = st.text_input(
+                    f"{row_name} {col_name}",
+                    key=input_key,
+                    label_visibility="collapsed",
+                    placeholder="",
+                )
+            typed = str(typed).strip()
+            row_state[col_name] = typed
+            row_out.append(pd.to_numeric(typed, errors="coerce"))
+
+        new_state_map[row_name] = row_state
+        out_rows.append(row_out)
+
+    st.session_state[state_key] = new_state_map
+    st.session_state[schema_key] = (tuple(rows), tuple(cols))
+
+    out = pd.DataFrame(out_rows, index=rows, columns=cols)
+    out.index.name = "Treatment"
+    out.columns.name = "Block"
+    return out
+
+
+def render_rcbd_input_grid_native(desired_grid: pd.DataFrame) -> pd.DataFrame:
+    edited = st.data_editor(
+        desired_grid,
+        use_container_width=True,
+        hide_index=False,
+        key="rcbd_editor_native",
+    )
+
+    out = edited.copy()
+    out.index = out.index.astype(str).str.strip()
+    out.columns = out.columns.astype(str).str.strip()
+    out.index.name = "Treatment"
+    out.columns.name = "Block"
+
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    return out
+
+
 def reconcile_grid(existing: pd.DataFrame, treatments: list[str], blocks: list[str]) -> pd.DataFrame:
     out = pd.DataFrame(np.nan, index=treatments, columns=blocks)
     out.index.name = "Treatment"
@@ -371,19 +557,57 @@ def _render_mode_picker(label: str, key: str, default: str = "fixed") -> str:
     )
 
 
+def _display_table(df: pd.DataFrame, *, use_container_width: bool = True) -> None:
+    st.dataframe(df, use_container_width=use_container_width, hide_index=True)
+
+
+def _compact_random_effects_table(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        return df
+
+    preferred_pairs = [
+        ["level", "estimate"],
+        ["Level", "Estimate"],
+    ]
+
+    keep = None
+    for cols in preferred_pairs:
+        if all(c in df.columns for c in cols):
+            keep = cols
+            break
+
+    out = df.loc[:, keep].copy() if keep else df.copy()
+
+    estimate_col = None
+    for c in ("estimate", "Estimate"):
+        if c in out.columns:
+            estimate_col = c
+            break
+
+    if estimate_col is not None:
+        out[estimate_col] = pd.to_numeric(out[estimate_col], errors="coerce").round(4)
+
+    return out
+
+
 def _init_state() -> None:
     if "rcbd_n_treatments" not in st.session_state:
-        st.session_state["rcbd_n_treatments"] = 3
+        st.session_state["rcbd_n_treatments"] = 4
     if "rcbd_n_blocks" not in st.session_state:
-        st.session_state["rcbd_n_blocks"] = 3
+        st.session_state["rcbd_n_blocks"] = 6
 
     if "rcbd_grid" not in st.session_state:
         treatments = _auto_labels(int(st.session_state["rcbd_n_treatments"]), "Treatment")
         blocks = _auto_labels(int(st.session_state["rcbd_n_blocks"]), "Block")
         seed = None
-        if treatments == ["A", "B", "C"] and blocks == ["B1", "B2", "B3"]:
+        if treatments == ["A", "B", "C", "D"] and blocks == [f'B{k+1}'.format(k) for k in range(6)]:
             seed = pd.DataFrame(
-                [[10, 12, 11], [13, 15, 14], [9, 11, 10]],
+                [
+                    [90.3, 89.2, 98.2, 93.9, 87.4, 97.9],
+                    [92.5, 89.5, 90.6, 94.7, 87.0, 95.8],
+                    [85.5, 90.8, 89.6, 86.2, 88.0, 93.4],
+                    [82.5, 89.5, 85.6, 87.4, 78.9, 90.7],
+                ],
                 index=treatments,
                 columns=blocks,
             )
@@ -411,6 +635,8 @@ def _init_state() -> None:
         st.session_state["rcbd_treatment_mode"] = "fixed"
     if "rcbd_block_mode" not in st.session_state:
         st.session_state["rcbd_block_mode"] = "random"
+    if "rcbd_use_native_table" not in st.session_state:
+        st.session_state["rcbd_use_native_table"] = False
 
 
 def _apply_pending_widget_updates() -> None:
@@ -432,6 +658,31 @@ def _apply_pending_widget_updates() -> None:
 
 _init_state()
 _apply_pending_widget_updates()
+_inject_rcbd_grid_css()
+
+st.toggle(
+    "Mobile-friendly table",
+    key="rcbd_use_native_table",
+    help="Switch to Streamlit's native table editor, which may work better on small screens.",
+)
+
+selector_col1, selector_col2 = st.columns(2)
+with selector_col1:
+    n_treatments = st.number_input(
+        "Number of treatments",
+        min_value=1,
+        max_value=200,
+        step=1,
+        key="rcbd_n_treatments_widget",
+    )
+with selector_col2:
+    n_blocks = st.number_input(
+        "Number of blocks",
+        min_value=1,
+        max_value=200,
+        step=1,
+        key="rcbd_n_blocks_widget",
+    )
 
 mode_col1, mode_col2 = st.columns(2)
 with mode_col1:
@@ -447,22 +698,6 @@ with mode_col2:
         default=st.session_state["rcbd_block_mode"],
     )
 
-n_treatments = st.number_input(
-    "Number of treatments",
-    min_value=1,
-    max_value=200,
-    step=1,
-    key="rcbd_n_treatments_widget",
-)
-
-n_blocks = st.number_input(
-    "Number of blocks",
-    min_value=1,
-    max_value=200,
-    step=1,
-    key="rcbd_n_blocks_widget",
-)
-
 st.session_state["rcbd_n_treatments"] = int(n_treatments)
 st.session_state["rcbd_n_blocks"] = int(n_blocks)
 
@@ -470,12 +705,10 @@ treatments = _desired_labels(st.session_state["rcbd_grid"], int(n_treatments), "
 blocks = _desired_labels(st.session_state["rcbd_grid"], int(n_blocks), "Block")
 desired_grid = reconcile_grid(st.session_state["rcbd_grid"], treatments, blocks)
 
-edited = st.data_editor(
-    desired_grid,
-    use_container_width=True,
-    hide_index=False,
-    key="rcbd_editor",
-)
+if st.session_state.get("rcbd_use_native_table", False):
+    edited = render_rcbd_input_grid_native(desired_grid)
+else:
+    edited = render_rcbd_input_grid(desired_grid)
 
 st.session_state["rcbd_grid"] = edited.copy()
 st.session_state["rcbd_grid"].index.name = "Treatment"
@@ -555,8 +788,7 @@ if st.button("Run RCBD ANOVA", type="primary"):
     st.subheader("ANOVA table")
     table = getattr(res, "tables", {}).get("anova")
     if isinstance(table, pd.DataFrame):
-        table = table.reset_index(drop=True)
-        st.dataframe(table, use_container_width=True)
+        _display_table(table)
     else:
         st.info("No ANOVA table was returned.")
 
@@ -564,21 +796,21 @@ if st.button("Run RCBD ANOVA", type="primary"):
         st.subheader("Variance components")
         table = getattr(res, "tables", {}).get("variance_components")
         if isinstance(table, pd.DataFrame):
-            st.dataframe(table.reset_index(drop=True), use_container_width=True)
+            _display_table(table)
         else:
             st.info("No variance components table was returned.")
 
         st.subheader("Random groups")
         table = getattr(res, "tables", {}).get("random_groups")
         if isinstance(table, pd.DataFrame):
-            st.dataframe(table.reset_index(drop=True), use_container_width=True)
+            _display_table(table)
         else:
             st.info("No random groups table was returned.")
 
         st.subheader("Random effects")
         table = getattr(res, "tables", {}).get("random_effects")
         if isinstance(table, pd.DataFrame):
-            st.dataframe(table.reset_index(drop=True), use_container_width=True)
+            _display_table(_compact_random_effects_table(table), use_container_width=False)
         else:
             st.info("No random effects table was returned.")
 
@@ -587,7 +819,7 @@ if st.button("Run RCBD ANOVA", type="primary"):
         if wtab.empty:
             st.info("No intermediate quantities were returned.")
         else:
-            st.dataframe(wtab, use_container_width=True)
+            _display_table(wtab)
 
     with st.expander("Show data used (long format)"):
-        st.dataframe(df, use_container_width=True)
+        _display_table(df)

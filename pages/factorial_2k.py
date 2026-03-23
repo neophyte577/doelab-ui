@@ -493,17 +493,25 @@ if st.button("Run ANOVA", type="primary"):
             st.error(f"This page is for 2-level factors only. Factor {f!r} has levels: {lv}.")
             st.stop()
 
+    df_analysis = df_long.copy()
+    for f in factors:
+        vals = df_analysis[f].astype(str).str.strip()
+        bad = sorted(set(vals[~vals.isin(["-", "+"])].tolist()))
+        if bad:
+            st.error(
+                f"Factor {f!r} contains unsupported coded values for analysis: {bad}. "
+                "Expected only '-' and '+'."
+            )
+            st.stop()
+        df_analysis[f] = vals.map({"-": -1, "+": 1}).astype(int)
+
     try:
         res = factorial_2k_analyze(
-            df_long,
+            df_analysis,
             response="y",
             factors=factors,
             factor_cols=factors,
-            require_complete_cells=True,
-            require_replication_per_cell=True,
-            min_cell_reps=2,
-            allow_unbalanced=False,
-            return_tables=("anova", "effects"),
+            return_tables=("anova", "effects", "coefficients"),
             dump="doe",
             copy=True,
         )
@@ -517,7 +525,7 @@ if st.button("Run ANOVA", type="primary"):
         st.dataframe(table.reset_index(drop=True), use_container_width=True)
     else:
         st.info("No ANOVA table was returned.")
-
+    
     with st.expander("Show contrasts"):
         eff = getattr(res, "tables", {}).get("effects")
 
@@ -532,6 +540,7 @@ if st.button("Run ANOVA", type="primary"):
 
             eff_df = eff.copy()
             st.dataframe(eff_df.reset_index(drop=True), use_container_width=True)
+    
 
     with st.expander("Show intermediate quantities"):
         wtab = workings_to_table(getattr(res, "workings", {}))
@@ -541,4 +550,5 @@ if st.button("Run ANOVA", type="primary"):
             st.dataframe(wtab, use_container_width=True)
 
     with st.expander("Show data used (long format)"):
-        st.dataframe(df_long, use_container_width=True)
+        st.dataframe(df_analysis, use_container_width=True)
+
