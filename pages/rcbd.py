@@ -97,6 +97,68 @@ def _flatten_mapping(x, prefix: str = "") -> list[dict]:
     rows.append({"quantity": prefix.rstrip("."), "value": _coerce_scalar_for_display(x)})
     return rows
 
+def _format_named_mapping(x) -> str:
+    if isinstance(x, Mapping):
+        parts = []
+        for k, v in x.items():
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                parts.append(f"{k}={float(v):.4g}")
+            else:
+                parts.append(f"{k}={v}")
+        return ", ".join(parts)
+    return str(x)
+
+
+def rcbd_intermediate_quantities_table(res) -> pd.DataFrame:
+    workings = getattr(res, "workings", None)
+    if not isinstance(workings, Mapping):
+        return pd.DataFrame(columns=["quantity", "value"])
+
+    rcbd = workings.get("doe", {}).get("rcbd", {})
+    if not isinstance(rcbd, Mapping):
+        return pd.DataFrame(columns=["quantity", "value"])
+
+    rows = []
+
+    if "mean_by_treatment" in rcbd:
+        rows.append({
+            "quantity": "Treatment means",
+            "value": _format_named_mapping(rcbd["mean_by_treatment"]),
+        })
+
+    if "mean_by_block" in rcbd:
+        rows.append({
+            "quantity": "Block means",
+            "value": _format_named_mapping(rcbd["mean_by_block"]),
+        })
+
+    if "grand_mean" in rcbd:
+        rows.append({
+            "quantity": "Grand mean",
+            "value": float(rcbd["grand_mean"]),
+        })
+
+    ss = rcbd.get("ss", {})
+    if isinstance(ss, Mapping):
+        if "treatment" in ss:
+            rows.append({"quantity": "SS_Treat", "value": round(float(ss["treatment"]), 2)})
+        if "block" in ss:
+            rows.append({"quantity": "SS_Block", "value": round(float(ss["block"]), 2)})
+        if "error" in ss:
+            rows.append({"quantity": "SS_Error", "value": round(float(ss["error"]), 2)})
+        if "total" in ss:
+            rows.append({"quantity": "SS_Total", "value": round(float(ss["total"]), 2)})
+
+    ms = rcbd.get("ms", {})
+    if isinstance(ms, Mapping):
+        if "treatment" in ms:
+            rows.append({"quantity": "MS_Treat", "value": round(float(ms["treatment"]), 2)})
+        if "block" in ms:
+            rows.append({"quantity": "MS_Block", "value": round(float(ms["block"]), 2)})
+        if "error" in ms:
+            rows.append({"quantity": "MS_Error", "value": round(float(ms["error"]), 2)})
+
+    return pd.DataFrame(rows, columns=["quantity", "value"])
 
 def workings_to_table(workings) -> pd.DataFrame:
     if not isinstance(workings, Mapping) or not workings:
@@ -565,13 +627,10 @@ def _compact_random_effects_table(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame):
         return df
 
-    preferred_pairs = [
-        ["level", "estimate"],
-        ["Level", "Estimate"],
-    ]
+    preferred_cols = [["level", "estimate","group"]]
 
     keep = None
-    for cols in preferred_pairs:
+    for cols in preferred_cols:
         if all(c in df.columns for c in cols):
             keep = cols
             break
@@ -815,7 +874,7 @@ if st.button("Run RCBD ANOVA", type="primary"):
             st.info("No random effects table was returned.")
 
     with st.expander("Show intermediate quantities"):
-        wtab = workings_to_table(getattr(res, "workings", {}))
+        wtab = rcbd_intermediate_quantities_table(res)
         if wtab.empty:
             st.info("No intermediate quantities were returned.")
         else:
