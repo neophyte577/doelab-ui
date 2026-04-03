@@ -28,7 +28,7 @@ def grid_to_long(df_grid: pd.DataFrame) -> pd.DataFrame:
         g[c] = pd.to_numeric(g[c], errors="coerce")
 
     long = (
-        g.stack(dropna=True)
+        g.stack()
         .reset_index()
         .rename(columns={"Treatment": "treatment", "Block": "block", 0: "y"})
     )
@@ -259,7 +259,7 @@ def _grid_to_long_from_matrix(mat: pd.DataFrame, row_labels: list[str], col_labe
     m.columns = pd.Index(col_labels, name="Block")
 
     long = (
-        m.stack(dropna=True)
+        m.stack()
         .reset_index()
         .rename(columns={"Treatment": "treatment", "Block": "block", 0: "y"})
     )

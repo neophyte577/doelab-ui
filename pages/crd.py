@@ -20,7 +20,7 @@ def grid_to_long(df_grid: pd.DataFrame) -> pd.DataFrame:
         g[c] = pd.to_numeric(g[c], errors="coerce")
 
     long = (
-        g.stack(dropna=True)
+        g.stack()
         .reset_index()
         .rename(columns={"Treatment": "treatment", 0: "y"})
     )
@@ -190,7 +190,7 @@ def _grid_to_long(mat: pd.DataFrame, row_labels: list[str]) -> pd.DataFrame:
     m.columns = [f"Obs {i+1}" for i in range(m.shape[1])]
 
     long = (
-        m.stack(dropna=True)
+        m.stack()
         .reset_index()
         .rename(columns={"Treatment": "treatment", 0: "y"})
     )
